@@ -799,6 +799,7 @@ describe("standards hook", () => {
       ["is not valid JSON", "{ rules: "],
       ["is not an object", "[]"],
       ["has a rule without suffixes", JSON.stringify({ rules: [{ document: storybookDocument }] })],
+      ["has a rule with an empty suffix", JSON.stringify({ rules: [{ document: storybookDocument, suffixes: [""] }] })],
       ["has a non-list of excluded directories", JSON.stringify({ excludedDirectories: "src" })],
     ]) {
       it(`falls back to the shipped standards when it ${description}`, async () => {

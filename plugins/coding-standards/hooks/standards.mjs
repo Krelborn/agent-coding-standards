@@ -765,8 +765,9 @@ function isStringList(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+// An empty suffix would match every file
 function isProjectRule(rule) {
-  return typeof rule?.document === "string" && isStringList(rule.suffixes);
+  return typeof rule?.document === "string" && isStringList(rule.suffixes) && !rule.suffixes.includes("");
 }
 
 function projectConfigurationProblem(projectConfiguration) {
@@ -779,7 +780,7 @@ function projectConfigurationProblem(projectConfiguration) {
     }
   }
   if ("rules" in projectConfiguration && !(Array.isArray(projectConfiguration.rules) && projectConfiguration.rules.every(isProjectRule))) {
-    return "has a rule without a string document and a list of string suffixes";
+    return "has a rule without a string document and a list of non-empty string suffixes";
   }
   return undefined;
 }

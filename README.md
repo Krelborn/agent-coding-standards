@@ -65,7 +65,7 @@ A project can add to the shipped configuration with an optional `.claude/standar
 }
 ```
 
-- `rules` are added after the shipped rules. `document` is relative to the project root, and the document is named by that path in the agent's context. A file gets every rule whose suffix its path ends with.
+- `rules` are added after the shipped rules. `document` is relative to the project root, and the document is named by that path in the agent's context. A file gets every rule whose suffix its path ends with. Suffixes must not be empty.
 - `disabled` lists the IDs of shipped standards to turn off.
 - `excludedDirectories` are added to the shipped list. A file with any path segment equal to one of them gets no standards.
 
