@@ -1,0 +1,9 @@
+{
+  "name": "coding-standards",
+  "description": "Injects Matt Styles' coding standards into an agent's context when it reads, writes or edits a matching file.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Matt Styles"
+  },
+  "repository": "https://github.com/Krelborn/agent-coding-standards"
+}

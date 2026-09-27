@@ -1,0 +1,128 @@
+{
+  "description": "Adds the coding standards matching a file to the agent's context when it reads, writes or edits the file, and restores them after compaction.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" pre 0",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" pre 1",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" pre 2",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" pre 3",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" pre 4",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" pre 5",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" post 0",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" post 1",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" post 2",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" post 3",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" post 4",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" post 5",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" session 0",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" session 1",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" session 2",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" session 3",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" session 4",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" session 5",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs\" subagent 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

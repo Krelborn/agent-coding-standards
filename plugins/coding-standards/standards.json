@@ -1,0 +1,22 @@
+{
+  "slotCount": 6,
+  "excludedDirectories": ["node_modules", "dist"],
+  "rules": [
+    {
+      "document": "comments.md",
+      "suffixes": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"]
+    },
+    {
+      "document": "typescript.md",
+      "suffixes": [".ts", ".tsx"]
+    },
+    {
+      "document": "react.md",
+      "suffixes": [".tsx", ".jsx", ".module.css"]
+    },
+    {
+      "document": "vitest-unit-testing.md",
+      "suffixes": [".test.ts", ".test.tsx"]
+    }
+  ]
+}

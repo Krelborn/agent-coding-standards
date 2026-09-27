@@ -1,0 +1,13 @@
+{
+  "name": "krelborn-standards",
+  "owner": {
+    "name": "Matt Styles"
+  },
+  "plugins": [
+    {
+      "name": "coding-standards",
+      "source": "./plugins/coding-standards",
+      "description": "Injects Matt Styles' coding standards into an agent's context when it reads, writes or edits a matching file."
+    }
+  ]
+}
