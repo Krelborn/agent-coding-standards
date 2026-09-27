@@ -703,6 +703,159 @@ describe("standards hook", () => {
     });
   });
 
+  describe("with a project configuration", () => {
+    const storybookDocument = "docs/standards/storybook.md";
+
+    beforeEach(() => {
+      fs.mkdirSync(path.join(projectDirectory, "docs", "standards"), { recursive: true });
+      fs.writeFileSync(path.join(projectDirectory, storybookDocument), "# Storybook\n\nWrite stories.\n");
+    });
+
+    it("adds its rules after the shipped rules, named by their project-relative path", async () => {
+      writeProjectConfiguration({ rules: [{ document: `./${storybookDocument}`, suffixes: [".stories.tsx"] }] });
+
+      const results = await runAllSlots("pre", toolInput("Read", "src/Button.stories.tsx"));
+
+      assert.deepEqual(injectedDocuments(results, [...shippedDocuments, storybookDocument]), [
+        commentsDocument,
+        typescriptDocument,
+        reactDocument,
+        storybookDocument,
+      ]);
+      assert.ok(contexts(results).join("\n").includes("Write stories."));
+      assert.ok(results.every((result) => result.stderr === ""));
+    });
+
+    it("gives the absolute path of a project document that did not fit", async () => {
+      writePluginConfiguration({ ...configuration, slotCount: 2 });
+      writeProjectConfiguration({ rules: [{ document: storybookDocument, suffixes: [".stories.tsx"] }] });
+
+      const messages = contexts(await runAllSlots("pre", toolInput("Read", "src/Button.stories.tsx")));
+
+      assert.ok(messages.at(-1).includes(path.join(projectDirectory, storybookDocument)));
+    });
+
+    it("turns off the shipped standards it disables", async () => {
+      writeProjectConfiguration({ disabled: [commentsDocument] });
+
+      const results = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      assert.deepEqual(injectedDocuments(results), [typescriptDocument]);
+      assert.ok(results.every((result) => result.stderr === ""));
+    });
+
+    it("reports a disabled name that is not a shipped standard", async () => {
+      writeProjectConfiguration({ disabled: ["coding-standards:missing.md"] });
+
+      const results = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      assert.deepEqual(injectedDocuments(results), [commentsDocument, typescriptDocument]);
+      assert.match(results[0].stderr, /coding-standards:missing\.md, which is not a shipped standard/);
+    });
+
+    it("adds its excluded directories to the shipped ones", async () => {
+      writeProjectConfiguration({ excludedDirectories: ["storybook-static"] });
+
+      for (const filePath of ["storybook-static/main.js", "node_modules/react/index.ts"]) {
+        assert.deepEqual(contexts(await runAllSlots("pre", toolInput("Read", filePath))), []);
+      }
+      assert.ok(injectedDocuments(await runAllSlots("pre", toolInput("Read", "src/format.ts"))).length > 0);
+    });
+
+    it("ignores a slot count and reports it", async () => {
+      writeProjectConfiguration({ slotCount: 1 });
+
+      const results = await runAllSlots("pre", toolInput("Read", "src/Button.test.tsx"));
+
+      assert.equal(injectedDocuments(results).length, 4);
+      assert.match(results[0].stderr, /sets slotCount, which is ignored/);
+      assert.ok(results.slice(1).every((result) => result.stderr === ""));
+    });
+
+    for (const [description, contents] of [
+      ["is not valid JSON", "{ rules: "],
+      ["is not an object", "[]"],
+      ["has a rule without suffixes", JSON.stringify({ rules: [{ document: storybookDocument }] })],
+      ["has a non-list of excluded directories", JSON.stringify({ excludedDirectories: "src" })],
+    ]) {
+      it(`falls back to the shipped standards when it ${description}`, async () => {
+        writeProjectConfiguration(contents);
+
+        const results = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+        assert.deepEqual(injectedDocuments(results), [commentsDocument, typescriptDocument]);
+        assert.ok(results.every((result) => result.exitCode === 0));
+        assert.match(results[0].stderr, /so only the shipped standards apply/);
+      });
+    }
+  });
+
+  describe("when the plugin root changes mid-session", () => {
+    it("treats standards loaded from the old root as still in context", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      const updatedPluginDirectory = path.join(temporaryDirectory, "plugin-updated");
+      copyPlugin(updatedPluginDirectory);
+
+      const results = await runAllSlots("pre", toolInput("Read", "src/other.ts"), {
+        CLAUDE_PLUGIN_ROOT: updatedPluginDirectory,
+      });
+
+      assert.deepEqual(contexts(results), []);
+    });
+
+    it("restores standards from the new root after compaction", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      const updatedPluginDirectory = path.join(temporaryDirectory, "plugin-updated");
+      copyPlugin(updatedPluginDirectory);
+      fs.appendFileSync(shippedDocumentPath(typescriptDocument, updatedPluginDirectory), "\nUpdated rule.\n");
+      fs.rmSync(pluginDirectory, { recursive: true });
+      appendCompactBoundary(transcriptPath);
+
+      const restored = await runAllSlots("session", sessionStartInput("compact"), {
+        CLAUDE_PLUGIN_ROOT: updatedPluginDirectory,
+      });
+
+      assert.deepEqual(injectedDocuments(restored), [commentsDocument, typescriptDocument]);
+      assert.ok(contexts(restored).join("\n").includes("Updated rule."));
+    });
+  });
+
+  describe("when the project also registers the hook itself", () => {
+    const projectHookCommand = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/standards.mjs" pre 0';
+
+    function writeProjectSettings(fileName, command) {
+      const settings = { hooks: { PreToolUse: [{ matcher: "Read|Write|Edit", hooks: [{ type: "command", command }] }] } };
+      fs.writeFileSync(path.join(projectDirectory, ".claude", fileName), JSON.stringify(settings));
+    }
+
+    for (const fileName of ["settings.json", "settings.local.json"]) {
+      it(`stays silent while ${fileName} registers it`, async () => {
+        writeProjectSettings(fileName, projectHookCommand);
+
+        const results = await runAllSlots("pre", toolInput("Write", "src/format.ts"));
+
+        assert.ok(results.every((result) => result.output === undefined && result.exitCode === 0));
+        assert.match(results[0].stderr, new RegExp(`${fileName.replace(".", "\\.")} also registers standards\\.mjs`));
+        assert.ok(results.slice(1).every((result) => result.stderr === ""));
+      });
+    }
+
+    it("injects as normal when project settings register other hooks", async () => {
+      writeProjectSettings("settings.json", '"$CLAUDE_PROJECT_DIR"/.claude/hooks/fallow-gate.sh');
+
+      assert.deepEqual(injectedDocuments(await runAllSlots("pre", toolInput("Read", "src/format.ts"))), [
+        commentsDocument,
+        typescriptDocument,
+      ]);
+    });
+
+    it("injects as normal when project settings are malformed", async () => {
+      fs.writeFileSync(path.join(projectDirectory, ".claude", "settings.json"), "{ hooks: ");
+
+      assert.ok(injectedDocuments(await runAllSlots("pre", toolInput("Read", "src/format.ts"))).length > 0);
+    });
+  });
+
   it("exits cleanly without output on malformed input", async () => {
     const result = await runHook("pre", 0, "not json");
 
