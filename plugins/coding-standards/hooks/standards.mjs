@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * Claude Code hook that adds the project's coding standards to an agent's context when it
- * reads, writes or edits a matching file, and restores them after compaction.
+ * Claude Code hook that adds coding standards to an agent's context when it reads, writes or
+ * edits a matching file, and restores them after compaction. The coding-standards plugin
+ * registers it in hooks/hooks.json.
  *
  * Usage: node standards.mjs <pre|post|session|subagent> <slot>
  *
- * See the "Coding standards" section of AGENTS.md.
+ * See the "Standards hook" section of the plugin repository's AGENTS.md.
  */
 
 // Below Claude Code's per-string additionalContext cap described in AGENTS.md
@@ -27,7 +28,13 @@ const changeShowingCommand = new RegExp(
 );
 
 const projectDirectory = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(import.meta.dirname, "..");
+const projectConfigurationPath = path.join(projectDirectory, ".claude", "standards.json");
+// Shipped documents are named by this prefix and their file name, since the plugin's own path
+// changes with every installed version
+const shippedDocumentPrefix = "coding-standards:";
 let configuration;
+let reportsWarnings = false;
 
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
@@ -433,29 +440,24 @@ function packPieces(pieces, limit, separator) {
 
 function documentHeader(rule, part, partCount) {
   const partLabel = partCount > 1 ? ` (part ${part} of ${partCount})` : "";
-  return `Project coding standard ${rule.document}${partLabel}, which applies to ${rule.suffixes.join(" ")} files. Its full text:\n\n`;
+  return `Project coding standard ${rule.id}${partLabel}, which applies to ${rule.suffixes.join(" ")} files. Its full text:\n\n`;
 }
 
 /**
  * Builds the context messages that carry a set of standards documents in full
  *
- * @param documents the document paths, relative to the project directory; any no longer
- *   configured or on disk are skipped
+ * @param documents the document IDs; any no longer configured or on disk are skipped
  * @returns one message per hook slot, each within the additionalContext limit, and the documents
  *   they deliver in full, apart from one too long for every slot, which is sent cut short
  */
 function buildMessages(documents) {
   const headerAllowance = 300;
   const segments = documents.flatMap((document) => {
-    const rule = configuration.rules.find((candidate) => candidate.document === document);
-    if (rule === undefined) {
+    const rule = ruleFor(document);
+    if (rule === undefined || !fs.existsSync(rule.path)) {
       return [];
     }
-    const documentPath = path.join(projectDirectory, document);
-    if (!fs.existsSync(documentPath)) {
-      return [];
-    }
-    const parts = splitMarkdown(fs.readFileSync(documentPath, "utf8"), messageCharacterLimit - headerAllowance);
+    const parts = splitMarkdown(fs.readFileSync(rule.path, "utf8"), messageCharacterLimit - headerAllowance);
     return parts.map((part, index) => ({
       document,
       partCount: parts.length,
@@ -479,8 +481,13 @@ function packSegments(segments) {
   return messages;
 }
 
+function ruleFor(document) {
+  return configuration.rules.find((candidate) => candidate.id === document);
+}
+
 function omissionNote(documents) {
-  return `These project coding standards did not fit in context automatically, in whole or in part, and are available to read in full: ${documents.join(", ")}`;
+  const paths = documents.map((document) => ruleFor(document).path);
+  return `These project coding standards did not fit in context automatically, in whole or in part, and are available to read in full: ${paths.join(", ")}`;
 }
 
 function wholeDocumentsThatFit(documentCount, packFirst) {
@@ -556,8 +563,8 @@ function emit(hookEventName, fields) {
 }
 
 function requiredDocuments(filePaths) {
-  const documents = new Set(filePaths.flatMap(applicableRules).map((rule) => rule.document));
-  return configuration.rules.map((rule) => rule.document).filter((document) => documents.has(document));
+  const documents = new Set(filePaths.flatMap(applicableRules).map((rule) => rule.id));
+  return configuration.rules.map((rule) => rule.id).filter((document) => documents.has(document));
 }
 
 function loadedEntries(documents, toolUseId) {
@@ -751,6 +758,127 @@ function handleSubagentStart(input, slot) {
   });
 }
 
+function warn(message) {
+  if (reportsWarnings) {
+    process.stderr.write(`standards hook: ${message}\n`);
+  }
+}
+
+function isStringList(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isProjectRule(rule) {
+  return typeof rule?.document === "string" && isStringList(rule.suffixes);
+}
+
+function projectConfigurationProblem(projectConfiguration) {
+  if (typeof projectConfiguration !== "object" || projectConfiguration === null || Array.isArray(projectConfiguration)) {
+    return "is not a JSON object";
+  }
+  for (const key of ["disabled", "excludedDirectories"]) {
+    if (key in projectConfiguration && !isStringList(projectConfiguration[key])) {
+      return `has a ${key} that is not a list of strings`;
+    }
+  }
+  if ("rules" in projectConfiguration && !(Array.isArray(projectConfiguration.rules) && projectConfiguration.rules.every(isProjectRule))) {
+    return "has a rule without a string document and a list of string suffixes";
+  }
+  return undefined;
+}
+
+/**
+ * Reads the project's own configuration, which adds to the plugin's
+ *
+ * @returns the configuration, or undefined when the project has none or it is malformed, which
+ *   is reported on stderr
+ */
+function readProjectConfiguration() {
+  let projectConfiguration;
+  try {
+    projectConfiguration = readJson(projectConfigurationPath);
+  } catch (error) {
+    warn(`${projectConfigurationPath} could not be read, so only the shipped standards apply: ${error.message}`);
+    return undefined;
+  }
+  if (projectConfiguration === undefined) {
+    return undefined;
+  }
+  const problem = projectConfigurationProblem(projectConfiguration);
+  if (problem !== undefined) {
+    warn(`${projectConfigurationPath} ${problem}, so only the shipped standards apply`);
+    return undefined;
+  }
+  if ("slotCount" in projectConfiguration) {
+    warn(
+      `${projectConfigurationPath} sets slotCount, which is ignored: it comes from the plugin, to match its hook handlers`
+    );
+  }
+  return projectConfiguration;
+}
+
+function projectRule(rule) {
+  const documentPath = path.resolve(projectDirectory, rule.document);
+  const id = path.relative(projectDirectory, documentPath).split(path.sep).join("/");
+  return { id, path: documentPath, suffixes: rule.suffixes };
+}
+
+/**
+ * Builds the configuration from the plugin's standards.json and the project's optional
+ * .claude/standards.json
+ *
+ * @returns the slot count, which comes from the plugin alone; the plugin's excluded directories
+ *   with the project's added; and the rules, each with a stable ID, the path of its document
+ *   and its suffixes, listing the shipped rules the project has not disabled before the
+ *   project's own
+ */
+function loadConfiguration() {
+  const shipped = readJson(path.join(pluginRoot, "standards.json"));
+  const shippedRules = shipped.rules.map((rule) => ({
+    id: `${shippedDocumentPrefix}${rule.document}`,
+    path: path.join(pluginRoot, "standards", rule.document),
+    suffixes: rule.suffixes,
+  }));
+  const project = readProjectConfiguration() ?? {};
+  const disabled = project.disabled ?? [];
+  for (const document of disabled.filter((id) => !shippedRules.some((rule) => rule.id === id))) {
+    warn(`${projectConfigurationPath} disables ${document}, which is not a shipped standard`);
+  }
+  return {
+    slotCount: shipped.slotCount,
+    excludedDirectories: [...new Set([...shipped.excludedDirectories, ...(project.excludedDirectories ?? [])])],
+    rules: [
+      ...shippedRules.filter((rule) => !disabled.includes(rule.id)),
+      ...(project.rules ?? []).map(projectRule),
+    ],
+  };
+}
+
+function registersStandardsHook(settingsPath) {
+  let settings;
+  try {
+    settings = readJson(settingsPath);
+  } catch {
+    return false;
+  }
+  return Object.values(settings?.hooks ?? {})
+    .flat()
+    .flatMap((group) => group?.hooks ?? [])
+    .some((hook) => typeof hook?.command === "string" && hook.command.includes("standards.mjs"));
+}
+
+/**
+ * Finds a project settings file that registers its own copy of this hook, which would inject the
+ * same standards a second time
+ *
+ * @returns the settings file's path, or undefined when none does
+ */
+function projectHookRegistration() {
+  return ["settings.json", "settings.local.json"]
+    .map((fileName) => path.join(projectDirectory, ".claude", fileName))
+    .find(registersStandardsHook);
+}
+
 const handlers = {
   post: handlePostToolUse,
   pre: handlePreToolUse,
@@ -760,12 +888,21 @@ const handlers = {
 
 try {
   const [mode, slotArgument = "0"] = process.argv.slice(2);
-  configuration = readJson(path.join(projectDirectory, ".claude", "standards.json"));
+  const slot = Number(slotArgument);
+  reportsWarnings = slot === 0;
   const handler = handlers[mode];
   if (handler === undefined) {
     throw new Error(`Unknown mode "${mode}"; expected one of ${Object.keys(handlers).join(", ")}`);
   }
-  handler(readStandardInput(), Number(slotArgument));
+  const registration = process.env.CLAUDE_PLUGIN_ROOT === undefined ? undefined : projectHookRegistration();
+  if (registration === undefined) {
+    configuration = loadConfiguration();
+    handler(readStandardInput(), slot);
+  } else {
+    warn(
+      `${registration} also registers standards.mjs, so the coding-standards plugin stays silent until that registration is removed`
+    );
+  }
 } catch (error) {
   process.stderr.write(`standards hook: ${error.stack ?? error}\n`);
 }

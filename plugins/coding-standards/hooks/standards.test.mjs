@@ -5,23 +5,32 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const repositoryDirectory = path.resolve(import.meta.dirname, "..", "..");
+const pluginSourceDirectory = path.resolve(import.meta.dirname, "..");
 const scriptPath = path.join(import.meta.dirname, "standards.mjs");
-const configuration = JSON.parse(fs.readFileSync(path.join(repositoryDirectory, ".claude", "standards.json"), "utf8"));
-const commentsDocument = "docs/standards/comments.md";
-const reactDocument = "docs/standards/react.md";
-const typescriptDocument = "docs/standards/typescript.md";
-const vitestDocument = "docs/standards/vitest-unit-testing.md";
+const configuration = JSON.parse(fs.readFileSync(path.join(pluginSourceDirectory, "standards.json"), "utf8"));
+const shippedPrefix = "coding-standards:";
+const shippedDocuments = configuration.rules.map((rule) => `${shippedPrefix}${rule.document}`);
+const commentsDocument = "coding-standards:comments.md";
+const reactDocument = "coding-standards:react.md";
+const typescriptDocument = "coding-standards:typescript.md";
+const vitestDocument = "coding-standards:vitest-unit-testing.md";
 
+let pluginDirectory;
 let projectDirectory;
 let temporaryDirectory;
 let transcriptPath;
 let toolUseCount = 0;
 
-function runHook(mode, slot, input) {
+function runHook(mode, slot, input, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [scriptPath, mode, String(slot)], {
-      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDirectory, TMPDIR: temporaryDirectory },
+      env: {
+        ...process.env,
+        CLAUDE_PLUGIN_ROOT: pluginDirectory,
+        CLAUDE_PROJECT_DIR: projectDirectory,
+        TMPDIR: temporaryDirectory,
+        ...env,
+      },
     });
     let stdout = "";
     let stderr = "";
@@ -39,8 +48,8 @@ function runHook(mode, slot, input) {
   });
 }
 
-function runAllSlots(mode, input) {
-  return Promise.all(Array.from({ length: configuration.slotCount }, (_, slot) => runHook(mode, slot, input)));
+function runAllSlots(mode, input, env = {}) {
+  return Promise.all(Array.from({ length: configuration.slotCount }, (_, slot) => runHook(mode, slot, input, env)));
 }
 
 function toolInput(toolName, filePath, extra = {}) {
@@ -69,9 +78,28 @@ function contexts(results) {
   return results.map((result) => result.output?.hookSpecificOutput.additionalContext).filter(Boolean);
 }
 
-function injectedDocuments(results) {
+function injectedDocuments(results, documents = shippedDocuments) {
   const text = contexts(results).join("\n");
-  return configuration.rules.map((rule) => rule.document).filter((document) => text.includes(`standard ${document}`));
+  return documents.filter((document) => text.includes(`standard ${document}`));
+}
+
+function shippedDocumentPath(document, root = pluginDirectory) {
+  return path.join(root, "standards", document.slice(shippedPrefix.length));
+}
+
+function writePluginConfiguration(value) {
+  fs.writeFileSync(path.join(pluginDirectory, "standards.json"), JSON.stringify(value));
+}
+
+function writeProjectConfiguration(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  fs.writeFileSync(path.join(projectDirectory, ".claude", "standards.json"), text);
+}
+
+function copyPlugin(destination) {
+  fs.mkdirSync(destination, { recursive: true });
+  fs.cpSync(path.join(pluginSourceDirectory, "standards.json"), path.join(destination, "standards.json"));
+  fs.cpSync(path.join(pluginSourceDirectory, "standards"), path.join(destination, "standards"), { recursive: true });
 }
 
 function appendCompactBoundary(filePath) {
@@ -112,15 +140,10 @@ function stripHeaders(text) {
 
 beforeEach(() => {
   temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "standards-hook-"));
+  pluginDirectory = path.join(temporaryDirectory, "plugin");
+  copyPlugin(pluginDirectory);
   projectDirectory = path.join(temporaryDirectory, "project");
   fs.mkdirSync(path.join(projectDirectory, ".claude"), { recursive: true });
-  fs.cpSync(
-    path.join(repositoryDirectory, ".claude", "standards.json"),
-    path.join(projectDirectory, ".claude", "standards.json")
-  );
-  fs.cpSync(path.join(repositoryDirectory, "docs"), path.join(projectDirectory, "docs"), {
-    recursive: true,
-  });
   transcriptPath = path.join(temporaryDirectory, "session.jsonl");
   fs.writeFileSync(transcriptPath, "");
 });
@@ -418,7 +441,7 @@ describe("standards hook", () => {
       assert.ok(messages.every((message) => message.length <= 10000));
       const delivered = stripHeaders(messages.join("\n\n"));
       for (const document of [commentsDocument, typescriptDocument, reactDocument, vitestDocument]) {
-        const text = fs.readFileSync(path.join(projectDirectory, document), "utf8");
+        const text = fs.readFileSync(shippedDocumentPath(document), "utf8");
         for (const line of text.split("\n").filter((line) => line.trim() !== "")) {
           assert.ok(delivered.includes(line), `${document} is missing the line: ${line}`);
         }
@@ -508,9 +531,8 @@ describe("standards hook", () => {
 
     it("restores the standards still configured when a loaded one was removed", async () => {
       await runAllSlots("pre", toolInput("Read", "src/format.ts"));
-      const configurationPath = path.join(projectDirectory, ".claude", "standards.json");
-      const rules = configuration.rules.filter((rule) => rule.document !== commentsDocument);
-      fs.writeFileSync(configurationPath, JSON.stringify({ ...configuration, rules }));
+      const rules = configuration.rules.filter((rule) => `${shippedPrefix}${rule.document}` !== commentsDocument);
+      writePluginConfiguration({ ...configuration, rules });
       appendCompactBoundary(transcriptPath);
 
       const restored = await runAllSlots("session", sessionStartInput("compact"));
@@ -546,25 +568,24 @@ describe("standards hook", () => {
 
   describe("when standards outgrow the slots", () => {
     beforeEach(() => {
-      const configurationPath = path.join(projectDirectory, ".claude", "standards.json");
-      fs.writeFileSync(configurationPath, JSON.stringify({ ...configuration, slotCount: 2 }));
+      writePluginConfiguration({ ...configuration, slotCount: 2 });
     });
 
     function configureDocuments(slotCount, lengths) {
       const rules = Object.entries(lengths).map(([name, length]) => {
-        const document = `docs/standards/${name}.md`;
-        fs.writeFileSync(path.join(projectDirectory, document), `${name} line\n`.repeat(length / (name.length + 6)));
+        const document = `${name}.md`;
+        const text = `${name} line\n`.repeat(length / (name.length + 6));
+        fs.writeFileSync(path.join(pluginDirectory, "standards", document), text);
         return { document, suffixes: [".x"] };
       });
-      const configurationPath = path.join(projectDirectory, ".claude", "standards.json");
-      fs.writeFileSync(configurationPath, JSON.stringify({ ...configuration, slotCount, rules }));
+      writePluginConfiguration({ ...configuration, slotCount, rules });
     }
 
     function sentParts(results, name) {
       return contexts(results)
         .join("\n")
         .split("Project coding standard ")
-        .filter((piece) => piece.startsWith(`docs/standards/${name}.md`)).length;
+        .filter((piece) => piece.startsWith(`${shippedPrefix}${name}.md`)).length;
     }
 
     it("makes progress when the first document needs every slot", async () => {
@@ -585,14 +606,19 @@ describe("standards hook", () => {
 
       assert.equal(sentParts(first, "huge"), 0);
       assert.equal(sentParts(second, "huge"), 2);
-      assert.match(contexts(second).at(-1), /available to read in full: docs\/standards\/huge\.md/);
+      assert.ok(
+        contexts(second)
+          .at(-1)
+          .endsWith(`available to read in full: ${shippedDocumentPath("coding-standards:huge.md")}`)
+      );
     });
 
     it("lists every document it could not deliver in full", async () => {
       const messages = contexts(await runAllSlots("pre", toolInput("Read", "src/Button.test.tsx")));
 
       assert.equal(messages.length, 2);
-      assert.match(messages[1], /available to read in full: .*docs\/standards\/vitest-unit-testing\.md/);
+      assert.match(messages[1], /available to read in full: /);
+      assert.ok(messages[1].includes(shippedDocumentPath(vitestDocument)));
     });
 
     it("delivers the rest on later calls for the same file type", async () => {
@@ -686,19 +712,23 @@ describe("standards hook", () => {
   });
 
   it("is registered with one handler per slot", () => {
-    const settings = JSON.parse(fs.readFileSync(path.join(repositoryDirectory, ".claude", "settings.json"), "utf8"));
+    const { hooks } = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "hooks.json"), "utf8"));
 
-    for (const [event, mode] of [
-      ["PreToolUse", "pre"],
-      ["PostToolUse", "post"],
-      ["SessionStart", "session"],
+    for (const [event, matcher, mode, handlerCount] of [
+      ["PreToolUse", "Read|Write|Edit", "pre", configuration.slotCount],
+      ["PostToolUse", "Bash", "post", configuration.slotCount],
+      ["SessionStart", "compact|clear", "session", configuration.slotCount],
+      ["SubagentStart", "fork", "subagent", 1],
     ]) {
-      const commands = settings.hooks[event][0].hooks.map((hook) => hook.command);
-      const expected = Array.from({ length: configuration.slotCount }, (_, slot) => `standards.mjs" ${mode} ${slot}`);
+      assert.equal(hooks[event].length, 1);
+      assert.equal(hooks[event][0].matcher, matcher);
+      const commands = hooks[event][0].hooks.map((hook) => hook.command);
+      const expected = Array.from({ length: handlerCount }, (_, slot) => `standards.mjs" ${mode} ${slot}`);
       assert.deepEqual(
         commands.map((command) => command.slice(command.indexOf("standards.mjs"))),
         expected
       );
+      assert.ok(commands.every((command) => command.startsWith('node "${CLAUDE_PLUGIN_ROOT}/hooks/standards.mjs"')));
     }
   });
 });
