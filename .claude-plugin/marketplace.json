@@ -3,6 +3,9 @@
   "owner": {
     "name": "Matt Styles"
   },
+  "metadata": {
+    "description": "Matt Styles' coding standards for Claude Code agents."
+  },
   "plugins": [
     {
       "name": "coding-standards",
