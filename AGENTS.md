@@ -35,7 +35,7 @@ A Claude Code plugin marketplace, `krelborn-standards`, holding one plugin, `cod
 - **Two roots**: shipped documents and `standards.json` load from `CLAUDE_PLUGIN_ROOT`. Project files, the project's `.claude/standards.json` and project documents resolve against `CLAUDE_PROJECT_DIR`.
 - **Stable IDs**: a shipped document is named `coding-standards:<file name>`, and a project document is named by its project-relative path. State, plan keys and message headers use these IDs and never the plugin's path, which changes with every installed version. So a plugin update mid-session does not inject the documents again. The note naming documents that did not fit gives their absolute paths, so the agent can Read them.
 - **Merged configuration**: the plugin's `standards.json` is applied first, then the project's `.claude/standards.json` if it exists:
-  - its `rules` are added after the shipped ones, with `document` relative to the project;
+  - its `rules` are added after the shipped ones, with `document` relative to the project; a rule whose document is not a file is skipped and reported on stderr;
   - `disabled` lists shipped IDs to turn off;
   - `excludedDirectories` are added to the shipped list.
 

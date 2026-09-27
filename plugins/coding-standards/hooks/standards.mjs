@@ -49,6 +49,10 @@ function writeJsonAtomically(filePath, value) {
   fs.renameSync(temporaryPath, filePath);
 }
 
+function isFile(filePath) {
+  return fs.statSync(filePath, { throwIfNoEntry: false })?.isFile() ?? false;
+}
+
 function readJson(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -485,7 +489,7 @@ function buildMessages(documents) {
   const headerAllowance = 300;
   const segments = documents.flatMap((document) => {
     const rule = ruleFor(document);
-    if (rule === undefined || !fs.statSync(rule.path, { throwIfNoEntry: false })?.isFile()) {
+    if (rule === undefined || !isFile(rule.path)) {
       return [];
     }
     const parts = splitMarkdown(fs.readFileSync(rule.path, "utf8"), messageCharacterLimit - headerAllowance);
@@ -640,7 +644,7 @@ function filesInChangeOutput(output) {
     if (applicableRules(candidate).length === 0) {
       return false;
     }
-    return fs.statSync(path.resolve(projectDirectory, candidate), { throwIfNoEntry: false })?.isFile() ?? false;
+    return isFile(path.resolve(projectDirectory, candidate));
   });
 }
 
@@ -895,12 +899,16 @@ function loadConfiguration() {
   for (const document of disabled.filter((id) => !shippedRules.some((rule) => rule.id === id))) {
     warn(`${projectConfigurationPath} disables ${document}, which is not a shipped standard`);
   }
+  const projectRules = (project.rules ?? []).map(projectRule);
+  for (const rule of projectRules.filter((candidate) => !isFile(candidate.path))) {
+    warn(`${projectConfigurationPath} has a rule for ${rule.id}, which is not a file, so it is skipped`);
+  }
   return {
     slotCount: shipped.slotCount,
     excludedDirectories: [...new Set([...shipped.excludedDirectories, ...(project.excludedDirectories ?? [])])],
     rules: mergeRulesById([
       ...shippedRules.filter((rule) => !disabled.includes(rule.id)),
-      ...(project.rules ?? []).map(projectRule),
+      ...projectRules,
     ]),
   };
 }

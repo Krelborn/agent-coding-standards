@@ -849,14 +849,20 @@ describe("standards hook", () => {
       assert.ok(text.includes(`standard ${storybookDocument}, which applies to .stories.tsx .stories.ts files`));
     });
 
-    it("skips a rule whose document is a directory", async () => {
-      writeProjectConfiguration({ rules: [{ document: "docs/standards", suffixes: [".ts"] }] });
+    for (const [description, document] of [
+      ["a directory", "docs/standards"],
+      ["missing", "docs/standards/missing.md"],
+    ]) {
+      it(`skips and reports a rule whose document is ${description}`, async () => {
+        writeProjectConfiguration({ rules: [{ document, suffixes: [".ts"] }] });
 
-      const results = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+        const results = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
 
-      assert.deepEqual(injectedDocuments(results), [commentsDocument, typescriptDocument]);
-      assert.ok(results.every((result) => result.stderr === ""));
-    });
+        assert.deepEqual(injectedDocuments(results), [commentsDocument, typescriptDocument]);
+        assert.match(results[0].stderr, new RegExp(`${document.replaceAll(".", "\\.")}, which is not a file`));
+        assert.ok(results.slice(1).every((result) => result.stderr === ""));
+      });
+    }
 
     it("turns off the shipped standards it disables", async () => {
       writeProjectConfiguration({ disabled: [commentsDocument] });
