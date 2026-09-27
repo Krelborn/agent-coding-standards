@@ -33,15 +33,12 @@ const projectConfigurationPath = path.join(projectDirectory, ".claude", "standar
 // Shipped documents are named by this prefix and their file name, since the plugin's own path
 // changes with every installed version
 const shippedDocumentPrefix = "coding-standards:";
+const standardsHookCommand = /(?:^|[\\/"'\s])standards\.mjs(?=["'\s]|$)/;
 let configuration;
 let reportsWarnings = false;
 
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
-}
-
-function readStandardInput() {
-  return JSON.parse(fs.readFileSync(0, "utf8"));
 }
 
 function writeJsonAtomically(filePath, value) {
@@ -454,7 +451,7 @@ function buildMessages(documents) {
   const headerAllowance = 300;
   const segments = documents.flatMap((document) => {
     const rule = ruleFor(document);
-    if (rule === undefined || !fs.existsSync(rule.path)) {
+    if (rule === undefined || !fs.statSync(rule.path, { throwIfNoEntry: false })?.isFile()) {
       return [];
     }
     const parts = splitMarkdown(fs.readFileSync(rule.path, "utf8"), messageCharacterLimit - headerAllowance);
@@ -823,6 +820,18 @@ function projectRule(rule) {
   return { id, path: documentPath, suffixes: rule.suffixes };
 }
 
+function mergeRulesById(rules) {
+  const merged = new Map();
+  for (const rule of rules) {
+    const existing = merged.get(rule.id);
+    merged.set(
+      rule.id,
+      existing === undefined ? rule : { ...existing, suffixes: [...new Set([...existing.suffixes, ...rule.suffixes])] }
+    );
+  }
+  return [...merged.values()];
+}
+
 /**
  * Builds the configuration from the plugin's standards.json and the project's optional
  * .claude/standards.json
@@ -847,10 +856,10 @@ function loadConfiguration() {
   return {
     slotCount: shipped.slotCount,
     excludedDirectories: [...new Set([...shipped.excludedDirectories, ...(project.excludedDirectories ?? [])])],
-    rules: [
+    rules: mergeRulesById([
       ...shippedRules.filter((rule) => !disabled.includes(rule.id)),
       ...(project.rules ?? []).map(projectRule),
-    ],
+    ]),
   };
 }
 
@@ -864,7 +873,7 @@ function registersStandardsHook(settingsPath) {
   return Object.values(settings?.hooks ?? {})
     .flat()
     .flatMap((group) => group?.hooks ?? [])
-    .some((hook) => typeof hook?.command === "string" && hook.command.includes("standards.mjs"));
+    .some((hook) => typeof hook?.command === "string" && standardsHookCommand.test(hook.command));
 }
 
 /**
@@ -894,10 +903,12 @@ try {
   if (handler === undefined) {
     throw new Error(`Unknown mode "${mode}"; expected one of ${Object.keys(handlers).join(", ")}`);
   }
+  // Read even when staying silent, so Claude Code's write of a large input is not cut off
+  const standardInput = fs.readFileSync(0, "utf8");
   const registration = process.env.CLAUDE_PLUGIN_ROOT === undefined ? undefined : projectHookRegistration();
   if (registration === undefined) {
     configuration = loadConfiguration();
-    handler(readStandardInput(), slot);
+    handler(JSON.parse(standardInput), slot);
   } else {
     warn(
       `${registration} also registers standards.mjs, so the coding-standards plugin stays silent until that registration is removed`

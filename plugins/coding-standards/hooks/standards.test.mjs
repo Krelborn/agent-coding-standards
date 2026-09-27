@@ -735,6 +735,29 @@ describe("standards hook", () => {
       assert.ok(messages.at(-1).includes(path.join(projectDirectory, storybookDocument)));
     });
 
+    it("sends a document named by several rules once, under all of their suffixes", async () => {
+      writeProjectConfiguration({
+        rules: [
+          { document: storybookDocument, suffixes: [".stories.tsx"] },
+          { document: `./${storybookDocument}`, suffixes: [".stories.ts"] },
+        ],
+      });
+
+      const text = contexts(await runAllSlots("pre", toolInput("Read", "src/Button.stories.tsx"))).join("\n");
+
+      assert.equal(text.split("Write stories.").length - 1, 1);
+      assert.ok(text.includes(`standard ${storybookDocument}, which applies to .stories.tsx .stories.ts files`));
+    });
+
+    it("skips a rule whose document is a directory", async () => {
+      writeProjectConfiguration({ rules: [{ document: "docs/standards", suffixes: [".ts"] }] });
+
+      const results = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      assert.deepEqual(injectedDocuments(results), [commentsDocument, typescriptDocument]);
+      assert.ok(results.every((result) => result.stderr === ""));
+    });
+
     it("turns off the shipped standards it disables", async () => {
       writeProjectConfiguration({ disabled: [commentsDocument] });
 
@@ -835,7 +858,7 @@ describe("standards hook", () => {
         const results = await runAllSlots("pre", toolInput("Write", "src/format.ts"));
 
         assert.ok(results.every((result) => result.output === undefined && result.exitCode === 0));
-        assert.match(results[0].stderr, new RegExp(`${fileName.replace(".", "\\.")} also registers standards\\.mjs`));
+        assert.match(results[0].stderr, new RegExp(`${fileName.replaceAll(".", "\\.")} also registers standards\\.mjs`));
         assert.ok(results.slice(1).every((result) => result.stderr === ""));
       });
     }
@@ -847,6 +870,12 @@ describe("standards hook", () => {
         commentsDocument,
         typescriptDocument,
       ]);
+    });
+
+    it("injects as normal when a project hook's script only ends in standards.mjs", async () => {
+      writeProjectSettings("settings.json", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/check-standards.mjs"');
+
+      assert.ok(injectedDocuments(await runAllSlots("pre", toolInput("Read", "src/format.ts"))).length > 0);
     });
 
     it("injects as normal when project settings are malformed", async () => {
