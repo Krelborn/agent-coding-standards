@@ -19,6 +19,8 @@ const lockTimeoutMilliseconds = 3000;
 const staleFileMilliseconds = 10 * 60 * 1000;
 const transcriptTailBytes = 1024 * 1024;
 const sameStepWindowMilliseconds = 3000;
+// How long after a restore its compaction's boundary may be timestamped and still count as its own
+const restoreBoundaryWindowMilliseconds = 60 * 1000;
 // Leaves slots waiting on the session lock time to read the plan
 const gitTimeoutMilliseconds = 2000;
 const writeTools = new Set(["Write", "Edit"]);
@@ -203,6 +205,10 @@ function parseJsonLine(line) {
   }
 }
 
+function boundaryTime(line) {
+  return Date.parse(parseJsonLine(line).timestamp);
+}
+
 function isCompactBoundary(line) {
   if (!line.includes("compact_boundary")) {
     return false;
@@ -232,21 +238,22 @@ function readFrom(filePath, offset) {
 }
 
 /**
- * Counts compactions recorded in a transcript after a byte offset
+ * Finds the compactions recorded in a transcript after a byte offset
  *
  * @param filePath the transcript file; a missing file counts as empty
  * @param offset the byte offset to start from
- * @returns the number of compactions found and the offset of the end of the last complete line
+ * @returns the time of each compaction found, in order and NaN where the transcript gives none, and
+ *   the offset of the end of the last complete line
  */
 function scanTranscript(filePath, offset) {
   const contents = readFrom(filePath, offset);
   const lastNewline = contents.lastIndexOf(10);
   if (lastNewline === -1) {
-    return { compactions: 0, offset };
+    return { boundaries: [], offset };
   }
   const lines = contents.subarray(0, lastNewline).toString("utf8").split("\n");
   return {
-    compactions: lines.filter(isCompactBoundary).length,
+    boundaries: lines.filter(isCompactBoundary).map(boundaryTime),
     offset: offset + lastNewline + 1,
   };
 }
@@ -361,16 +368,43 @@ function composedBeforeStandards(input, documents) {
 }
 
 /**
+ * Reads the compactions an agent's transcript has recorded since the last scan
+ *
+ * @param state the stored state
+ * @param input the hook input
+ * @returns whether any of them is one the state does not already reflect, the new transcript
+ *   offset, and how many already-reflected compactions have still to be recorded
+ */
+function scanCompactions(state, input) {
+  const scan = scanTranscript(transcriptPath(input), state.transcriptOffset);
+  let pendingCompactions = state.pendingCompactions ?? 0;
+  let unreflected = false;
+  for (const time of scan.boundaries) {
+    if (pendingCompactions > 0 && isWithinRestoreWindow(time, state.restoredAt)) {
+      pendingCompactions -= 1;
+    } else {
+      unreflected = true;
+      pendingCompactions = 0;
+    }
+  }
+  return { unreflected, transcriptOffset: scan.offset, pendingCompactions };
+}
+
+function isWithinRestoreWindow(time, restoredAt) {
+  return Number.isNaN(time) || restoredAt === undefined || time <= restoredAt + restoreBoundaryWindowMilliseconds;
+}
+
+/**
  * Brings an agent's state up to date with its transcript
  *
  * @param state the stored state
  * @param input the hook input
  * @returns the state with a new offset, and with nothing loaded if the agent's context was
- *   compacted since the last scan
+ *   compacted since the last scan by a compaction the state does not already reflect
  */
 function refreshForCompaction(state, input) {
-  const scan = scanTranscript(transcriptPath(input), state.transcriptOffset);
-  return { loaded: scan.compactions === 0 ? state.loaded : [], transcriptOffset: scan.offset };
+  const { unreflected, transcriptOffset, pendingCompactions } = scanCompactions(state, input);
+  return { ...state, loaded: unreflected ? [] : state.loaded, transcriptOffset, pendingCompactions };
 }
 
 function applicableRules(filePath) {
@@ -724,14 +758,21 @@ function handleSessionStart(input, slot) {
   if (input.source !== "compact") {
     return;
   }
-  const compactions = countCompactBoundaries(input.transcript_path);
+  const compactions = countCompactBoundaries(transcriptPath(input));
   const messages = sharedPlan(input, `compact-${compactions}`, () => {
     const state = readState(input);
-    const scan = scanTranscript(input.transcript_path, state.transcriptOffset);
+    const scan = scanCompactions(state, input);
     const { messages, delivered } = buildMessages(state.loaded.map((entry) => entry.document));
+    // Claude Code runs this hook before it writes the compaction's boundary to the transcript, so
+    // a boundary that has not arrived yet is recorded as already handled. One still awaited from
+    // an earlier restore is dropped once too old to arrive.
+    const restoredAt = Date.now();
+    const awaited = isWithinRestoreWindow(restoredAt, state.restoredAt) ? scan.pendingCompactions : 0;
     writeJsonAtomically(statePath(input), {
       loaded: loadedEntries(delivered, null),
-      transcriptOffset: scan.offset,
+      transcriptOffset: scan.transcriptOffset,
+      pendingCompactions: scan.unreflected ? 0 : awaited + 1,
+      restoredAt,
     });
     return messages;
   });

@@ -102,9 +102,13 @@ function copyPlugin(destination) {
   fs.cpSync(path.join(pluginSourceDirectory, "standards"), path.join(destination, "standards"), { recursive: true });
 }
 
-function appendCompactBoundary(filePath) {
+function appendCompactBoundary(filePath, timestamp) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.appendFileSync(filePath, `${JSON.stringify({ type: "system", subtype: "compact_boundary" })}\n`);
+  fs.appendFileSync(filePath, `${JSON.stringify({ type: "system", subtype: "compact_boundary", timestamp })}\n`);
+}
+
+function minutesFromNow(minutes) {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
 function appendAssistantMessage(filePath, messageId, toolUseIds) {
@@ -500,6 +504,102 @@ describe("standards hook", () => {
       assert.ok(
         (await runAllSlots("pre", toolInput("Write", "src/other.ts"))).every((result) => result.output === undefined)
       );
+    });
+
+    it("restores loaded standards when the compaction's boundary is written after the restore", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      const restored = await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+      const nextRead = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      assert.deepEqual(injectedDocuments(restored), [commentsDocument, typescriptDocument]);
+      assert.deepEqual(contexts(nextRead), []);
+    });
+
+    it("allows a Write once the compaction's boundary is written after the restore", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+
+      assert.ok(
+        (await runAllSlots("pre", toolInput("Write", "src/other.ts"))).every((result) => result.output === undefined)
+      );
+    });
+
+    it("keeps standards loaded between two compactions whose boundaries follow their restores", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+      await runAllSlots("pre", toolInput("Read", "src/Button.tsx"));
+
+      const secondRestore = await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+      const nextRead = await runAllSlots("pre", toolInput("Read", "src/Button.tsx"));
+
+      assert.deepEqual(injectedDocuments(secondRestore), [commentsDocument, typescriptDocument, reactDocument]);
+      assert.deepEqual(contexts(nextRead), []);
+    });
+
+    it("keeps restored standards through two compactions with no tool call between them", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+
+      assert.deepEqual(contexts(await runAllSlots("pre", toolInput("Read", "src/format.ts"))), []);
+    });
+
+    it("injects standards again after a later compaction that no restore accounted for", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath);
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      appendCompactBoundary(transcriptPath);
+
+      assert.deepEqual(injectedDocuments(await runAllSlots("pre", toolInput("Read", "src/format.ts"))), [
+        commentsDocument,
+        typescriptDocument,
+      ]);
+    });
+
+    it("keeps restored standards when the boundary written after the restore is timestamped at it", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath, minutesFromNow(0));
+
+      assert.deepEqual(contexts(await runAllSlots("pre", toolInput("Read", "src/format.ts"))), []);
+    });
+
+    it("denies a Write after a compaction whose boundary is too late to be the restore's own", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath, minutesFromNow(5));
+
+      const results = await runAllSlots("pre", toolInput("Write", "src/other.ts"));
+
+      assert.equal(results[0].output.hookSpecificOutput.permissionDecision, "deny");
+      assert.deepEqual(injectedDocuments(results), [commentsDocument, typescriptDocument]);
+    });
+
+    it("does not add a restore's boundary that never arrived to the next restore's", async () => {
+      await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+      const state = JSON.parse(fs.readFileSync(mainStatePath(), "utf8"));
+      const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+      fs.writeFileSync(mainStatePath(), JSON.stringify({ ...state, pendingCompactions: 1, restoredAt: tenMinutesAgo }));
+      await runAllSlots("session", sessionStartInput("compact"));
+      appendCompactBoundary(transcriptPath, minutesFromNow(0));
+      const ownBoundaryRead = await runAllSlots("pre", toolInput("Read", "src/format.ts"));
+
+      appendCompactBoundary(transcriptPath, minutesFromNow(0));
+
+      assert.deepEqual(contexts(ownBoundaryRead), []);
+      assert.deepEqual(injectedDocuments(await runAllSlots("pre", toolInput("Read", "src/format.ts"))), [
+        commentsDocument,
+        typescriptDocument,
+      ]);
     });
 
     it("restores standards recorded in the older state format", async () => {
